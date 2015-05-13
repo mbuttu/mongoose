@@ -85,7 +85,7 @@ describe('model: populate:', function(){
           assert.doesNotThrow(function(){
             post.populate('comments', function(){});
           });
-          
+
           done();
         });
       });
@@ -923,6 +923,45 @@ describe('model: populate:', function(){
     })
   })
 
+  it('clears cache when array has been re-assigned (gh-2176)', function(done) {
+    var db = start();
+    var BlogPost = db.model('RefBlogPost', posts, 'gh-2176-1');
+    var User = db.model('RefUser', users, 'gh-2176-2');
+
+    User.create({ name: 'aaron' }, { name: 'val' }, function (err, user1, user2) {
+      assert.ifError(err);
+
+      BlogPost.create(
+        {
+          title: 'gh-2176',
+          _creator: user1._id,
+          comments: []
+        },
+        function (err, post1) {
+          assert.ifError(err);
+          BlogPost.
+            find({ title: 'gh-2176' }).
+            populate('_creator').
+            exec(function(error, posts) {
+              assert.ifError(error);
+              assert.equal(1, posts.length);
+              assert.equal('aaron', posts[0]._creator.name);
+              posts[0]._creator = user2;
+              assert.equal('val', posts[0]._creator.name);
+              posts[0].save(function(error, post) {
+                assert.ifError(error);
+                assert.equal('val', post._creator.name);
+                posts[0].populate('_creator', function(error, doc) {
+                  assert.ifError(error);
+                  assert.equal('val', doc._creator.name);
+                  done();
+                });
+              });
+            });
+        });
+    });
+  });
+
   it('populating subdocuments partially', function(done){
     var db = start()
       , BlogPost = db.model('RefBlogPost', posts)
@@ -1092,7 +1131,101 @@ describe('model: populate:', function(){
         });
       });
     });
-  })
+  });
+
+  it('properly handles limit per document (gh-2151)', function(done) {
+    var db = start();
+    var ObjectId = mongoose.Types.ObjectId;
+
+    var user = new Schema({
+      name: String,
+      friends: [{
+        type: Schema.ObjectId,
+        ref: 'gh-2151-1'
+      }]
+    });
+    var User = db.model('gh-2151-1', user, 'gh-2151-1');
+
+    var blogpost = Schema({
+      title: String,
+      tags: [String],
+      author: {
+        type: Schema.ObjectId,
+        ref: 'gh-2151-1'
+      }
+    })
+    var BlogPost = db.model('gh-2151-2', blogpost, 'gh-2151-2');
+
+    var userIds = [new ObjectId, new ObjectId, new ObjectId, new ObjectId];
+    var users = [];
+
+    users.push({
+      _id: userIds[0],
+      name: 'mary',
+      friends: [userIds[1], userIds[2], userIds[3]]
+    });
+    users.push({
+      _id: userIds[1],
+      name: 'bob',
+      friends: [userIds[0], userIds[2], userIds[3]]
+    });
+    users.push({
+      _id: userIds[2],
+      name: 'joe',
+      friends: [userIds[0], userIds[1], userIds[3]]
+    });
+    users.push({
+      _id: userIds[3],
+      name: 'sally',
+      friends: [userIds[0], userIds[1], userIds[2]]
+    });
+
+    User.create(users, function(err, docs) {
+      assert.ifError(err);
+
+      var blogposts = [];
+      blogposts.push({
+        title: 'blog 1',
+        tags: ['fun', 'cool'],
+        author: userIds[3]
+      });
+      blogposts.push({
+        title: 'blog 2',
+        tags: ['cool'],
+        author: userIds[1]
+      });
+      blogposts.push({
+        title: 'blog 3',
+        tags: ['fun', 'odd'],
+        author: userIds[2]
+      });
+
+      BlogPost.create(blogposts, function(err, docs) {
+        assert.ifError(err);
+
+        BlogPost.
+          find({ tags: 'fun' }).
+          lean().
+          populate('author').
+          exec(function(err, docs) {
+            assert.ifError(err);
+            var opts = {
+              path: 'author.friends',
+              select: 'name',
+              options: { limit: 1 }
+            };
+
+            BlogPost.populate(docs, opts, function(err, docs) {
+              assert.ifError(err);
+              assert.equal(2, docs.length);
+              assert.equal(1, docs[0].author.friends.length);
+              assert.equal(1, docs[1].author.friends.length);
+              done();
+            })
+          });
+      });
+    });
+  });
 
   it('populating subdocuments partially with empty array (gh-481)', function(done){
     var db = start()
@@ -1316,53 +1449,60 @@ describe('model: populate:', function(){
       , P = db.model('RefBlogPost', posts)
       , User = db.model('RefUser', users);
 
-    User.create({ name: 'aaron', age: 10 }, { name: 'fan2', age: 8 }, { name: 'someone else', age: 3 },
-    function (err, fan1, fan2, fan3) {
-      assert.ifError(err);
-
-      P.create({ fans: [fan2, fan3, fan1] }, function (err, post) {
+    User.create(
+      { name: 'aaron', age: 10 },
+      { name: 'fan2', age: 8 },
+      { name: 'someone else', age: 3 },
+      { name: 'val', age: 3 },
+      function (err, fan1, fan2, fan3, fan4) {
         assert.ifError(err);
 
-        P.findById(post)
-        .populate('fans', null, null, { sort: 'name' })
-        .exec(function (err, post) {
+        P.create({ fans: [fan4, fan2, fan3, fan1] }, function (err, post) {
           assert.ifError(err);
 
-          assert.equal(post.fans.length,3);
-          assert.equal(post.fans[0].name,'aaron');
-          assert.equal(post.fans[1].name,'fan2');
-          assert.equal(post.fans[2].name,'someone else');
-
           P.findById(post)
-          .populate('fans', 'name', null, { sort: {'name':-1} })
+          .populate('fans', null, null, { sort: { age: 1, name: 1 } })
           .exec(function (err, post) {
             assert.ifError(err);
 
-            assert.equal(post.fans.length,3);
-            assert.equal(post.fans[2].name,'aaron');
-            assert.strictEqual(undefined, post.fans[2].age)
-            assert.equal(post.fans[1].name,'fan2');
-            assert.strictEqual(undefined, post.fans[1].age)
-            assert.equal(post.fans[0].name,'someone else');
-            assert.strictEqual(undefined, post.fans[0].age)
+            assert.equal(post.fans.length, 4);
+            assert.equal(post.fans[0].name, 'someone else');
+            assert.equal(post.fans[1].name, 'val');
+            assert.equal(post.fans[2].name, 'fan2');
+            assert.equal(post.fans[3].name, 'aaron');
 
             P.findById(post)
-            .populate('fans', 'age', { age: { $gt: 3 }}, { sort: {'name': 'desc'} })
+            .populate('fans', 'name', null, { sort: {'name':-1} })
             .exec(function (err, post) {
-              db.close();
               assert.ifError(err);
 
-              assert.equal(post.fans.length,2);
-              assert.equal(post.fans[1].age.valueOf(),10);
-              assert.equal(post.fans[0].age.valueOf(),8);
+              assert.equal(post.fans.length, 4);
+              assert.equal(post.fans[3].name,'aaron');
+              assert.strictEqual(undefined, post.fans[3].age);
+              assert.equal(post.fans[2].name,'fan2');
+              assert.strictEqual(undefined, post.fans[2].age);
+              assert.equal(post.fans[1].name,'someone else');
+              assert.strictEqual(undefined, post.fans[1].age);
+              assert.equal(post.fans[0].name, 'val');
+              assert.strictEqual(undefined, post.fans[0].age);
 
-              done();
+              P.findById(post)
+              .populate('fans', 'age', { age: { $gt: 3 }}, { sort: {'name': 'desc'} })
+              .exec(function (err, post) {
+                db.close();
+                assert.ifError(err);
+
+                assert.equal(post.fans.length,2);
+                assert.equal(post.fans[1].age.valueOf(),10);
+                assert.equal(post.fans[0].age.valueOf(),8);
+
+                done();
+              });
             });
           });
         });
       });
-    });
-  })
+  });
 
   it('limit should apply to each returned doc, not in aggregate (gh-1490)', function(done){
     var db = start();
@@ -1991,13 +2131,15 @@ describe('model: populate:', function(){
 
     describe('of individual document', function(){
       it('works', function(done){
-        var ret = utils.populate({ path: '_creator', model: 'RefAlternateUser' })
-        B.populate(post1, ret, function (err, post) {
-          assert.ifError(err);
-          assert.ok(post);
-          assert.ok(post._creator instanceof User);
-          assert.equal('Phoenix', post._creator.name);
-          done()
+        B.findById(post1._id, function(error, post1) {
+          var ret = utils.populate({ path: '_creator', model: 'RefAlternateUser' })
+          B.populate(post1, ret, function (err, post) {
+            assert.ifError(err);
+            assert.ok(post);
+            assert.ok(post._creator instanceof User);
+            assert.equal('Phoenix', post._creator.name);
+            done();
+          });
         });
       })
     })
@@ -2085,24 +2227,29 @@ describe('model: populate:', function(){
       })
     })
 
-    describe('of multiple documents', function(){
-      it('works', function(done){
-        post1._creator = post1._creator._id;
-        var ret = utils.populate({ path: '_creator', model: 'RefAlternateUser' })
-        B.populate([post1, post2], ret, function (err, posts) {
-          assert.ifError(err);
-          assert.ok(posts);
-          assert.equal(2, posts.length);
-          var p1 = posts[0];
-          var p2 = posts[1];
-          assert.ok(p1._creator instanceof User);
-          assert.equal('Phoenix', p1._creator.name);
-          assert.ok(p2._creator instanceof User);
-          assert.equal('Newark', p2._creator.name);
-          done()
+    describe('of multiple documents', function() {
+      it('works', function(done) {
+        B.findById(post1._id, function(error, post1) {
+          assert.ifError(error);
+          B.findById(post2._id, function(error, post2) {
+            assert.ifError(error);
+            var ret = utils.populate({ path: '_creator', model: 'RefAlternateUser' });
+            B.populate([post1, post2], ret, function (err, posts) {
+              assert.ifError(err);
+              assert.ok(posts);
+              assert.equal(2, posts.length);
+              var p1 = posts[0];
+              var p2 = posts[1];
+              assert.ok(p1._creator instanceof User);
+              assert.equal('Phoenix', p1._creator.name);
+              assert.ok(p2._creator instanceof User);
+              assert.equal('Newark', p2._creator.name);
+              done();
+            });
+          });
         });
-      })
-    })
+      });
+    });
 
   })
 
@@ -2495,4 +2642,61 @@ describe('model: populate:', function(){
       }
     }
   })
+
+  describe('gh-2252', function() {
+    it('handles skip', function(done) {
+      var db = start();
+
+      var movieSchema = new Schema({});
+      var categorySchema = new Schema({ movies: [{ type: ObjectId, ref: 'gh-2252-1' }] });
+
+      var Movie = db.model('gh-2252-1', movieSchema);
+      var Category = db.model('gh-2252-2', categorySchema);
+
+      Movie.create({}, {}, {}, function(error) {
+        assert.ifError(error);
+        Movie.find({}, function(error, docs) {
+          assert.ifError(error);
+          assert.equal(docs.length, 3);
+          Category.create({ movies: [docs[0]._id, docs[1]._id, docs[2]._id] }, function(error) {
+            assert.ifError(error);
+            Category.findOne({}).populate({ path: 'movies', options: { limit: 2, skip: 1 } }).exec(function(error, category) {
+              assert.ifError(error);
+              assert.equal(2, category.movies.length);
+              done();
+            });
+          });
+        });
+      });
+    });
+  });
+
+  it('handles slice (gh-1934)', function(done) {
+    var db = start();
+
+    var movieSchema = new Schema({ title: String, actors: [String] });
+    var categorySchema = new Schema({ movies: [{ type: ObjectId, ref: 'gh-1934-1' }] });
+
+    var Movie = db.model('gh-1934-1', movieSchema);
+    var Category = db.model('gh-1934-2', categorySchema);
+    var movies = [
+      { title: 'Rush', actors: ['Chris Hemsworth', 'Daniel Bruhl'] },
+      { title: 'Pacific Rim', actors: ['Charlie Hunnam', 'Idris Elba'] },
+      { title: 'Man of Steel', actors: ['Henry Cavill', 'Amy Adams'] }
+    ];
+    Movie.create(movies, function(error, m1, m2, m3) {
+      assert.ifError(error);
+      Category.create({ movies: [m1._id, m2._id, m3._id] }, function(error) {
+        assert.ifError(error);
+        Category.findOne({}).populate({ path: 'movies', options: { slice: { actors: 1 } } }).exec(function(error, category) {
+          assert.ifError(error);
+          assert.equal(category.movies.length, 3);
+          assert.equal(category.movies[0].actors.length, 1);
+          assert.equal(category.movies[1].actors.length, 1);
+          assert.equal(category.movies[2].actors.length, 1);
+          done();
+        });
+      });
+    });
+  });
 });

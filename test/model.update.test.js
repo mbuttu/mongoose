@@ -305,6 +305,19 @@ describe('model: update:', function(){
     });
   });
 
+  it('makes copy of conditions and update options', function(done) {
+    var db = start()
+      , BlogPost = db.model('BlogPostForUpdates', collection);
+
+    var conditions = { '_id': post._id.toString() };
+    var update = {'$set':{'some_attrib':post._id.toString()}};
+    BlogPost.update(conditions, update, function(err) {
+      assert.ifError(err);
+      assert.equal('string', typeof conditions._id);
+      done();
+    });
+  });
+
   it('handles weird casting (gh-479)', function(done){
     var db = start()
       , BlogPost = db.model('BlogPostForUpdates', collection)
@@ -357,7 +370,7 @@ describe('model: update:', function(){
         assert.equal(1, ret._doc.comments[0]._doc.newprop);
         assert.strictEqual(undefined, ret._doc.comments[1]._doc.newprop);
         assert.ok(ret.date instanceof Date);
-        assert.equal(ret.date.toString(), update.$set.date.toString());
+        assert.equal(ret.date.toString(), new Date(update.$set.date).toString());
 
         last = ret;
         done();
@@ -1015,6 +1028,101 @@ describe('model: update:', function(){
           assert.strictEqual(0, doc.arr.length);
           done();
         });
+      });
+    });
+  });
+
+  it('works with $set and overwrite (gh-2515)', function(done) {
+    var db = start();
+
+    var schema = new Schema({ breakfast: String });
+    var M = db.model('gh-2515', schema);
+
+    M.create({ breakfast: 'bacon' }, function(error, doc) {
+      assert.ifError(error);
+      M.update(
+        { _id: doc._id },
+        { $set: { breakfast: 'eggs' } },
+        { overwrite: true },
+        function(error) {
+          assert.ifError(error);
+          M.findOne({ _id: doc._id }, function(error, doc) {
+            assert.ifError(error);
+            assert.equal(doc.breakfast, 'eggs');
+            db.close(done);
+          });
+        });
+    });
+  });
+
+  it('works with overwrite but no $set (gh-2568)', function(done) {
+    var db = start();
+
+    var chapterSchema = {
+      name: String
+    };
+    var bookSchema = {
+      chapters: [chapterSchema],
+      title: String,
+      author: String,
+      id: Number
+    };
+    var Book = db.model('gh2568', bookSchema);
+
+    var jsonObject = {
+      chapters: [{name: 'Ursus'}, {name: 'The Comprachicos'}],
+      name: 'The Man Who Laughs',
+      author: 'Victor Hugo',
+      id: 0
+    };
+
+    Book.update({}, jsonObject, { upsert: true, overwrite: true },
+      function(error, book) {
+        assert.ifError(error);
+        Book.findOne({ id: 0 }, function(error, book) {
+          assert.ifError(error);
+          assert.equal(book.chapters.length, 2);
+          assert.ok(book.chapters[0]._id);
+          assert.ok(book.chapters[1]._id);
+          done();
+        });
+      });
+  });
+
+  it('works with undefined date (gh-2833)', function(done) {
+    var db = start();
+
+    var dateSchema = {
+      d: Date
+    };
+    var D = db.model('gh2833', dateSchema);
+
+    D.update({}, { d: undefined }, function(error) {
+      assert.ok(error instanceof MongooseError.CastError);
+      done();
+    });
+  });
+
+  it('does not add virtuals to update (gh-2046)', function(done) {
+    var db = start();
+
+    var childSchema = Schema({ foo: String }, { toObject: { getters: true } })
+    var parentSchema = Schema({ children: [childSchema] });
+
+    childSchema.virtual('bar').get(function() { return 'bar'; });
+
+    var Parent = db.model('gh2046', parentSchema, 'gh2046');
+
+    var update = Parent.update({}, { $push: { children: { foo: 'foo' } } }, { upsert: true });
+    assert.equal(update._update.$push.children.bar, undefined);
+
+    update.exec(function(error) {
+      assert.ifError(error);
+      Parent.findOne({}, function(error, doc) {
+        assert.ifError(error);
+        assert.equal(doc.children.length, 1);
+        assert.ok(!doc.children[0].bar);
+        db.close(done);
       });
     });
   });

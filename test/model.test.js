@@ -139,6 +139,21 @@ describe('Model', function(){
     })
   });
 
+  it('gh-2140', function(done) {
+    var db = start();
+    var S = new Schema({
+      field: [{text: String}]
+    });
+
+    var Model = db.model('gh-2140', S, 'gh-2140');
+    var s = new Model();
+    s.field = [null];
+    s.field = [{text: 'text'}];
+
+    assert.ok(s.field[0]);
+    done();
+  });
+
   describe('schema', function(){
     it('should exist', function(done){
       var db = start()
@@ -1888,7 +1903,8 @@ describe('Model', function(){
         assert.equal(false, threw);
         getter1 = JSON.parse(getter1);
         getter2 = JSON.parse(getter2);
-        assert.equal(getter1.visitors, getter2.visitors);
+        assert.equal(getter1.visitors, 5);
+        assert.equal(getter2.visitors, 5);
         assert.equal(getter1.date, getter2.date);
 
         post.meta.date = new Date - 1000;
@@ -3234,8 +3250,37 @@ describe('Model', function(){
     });
   });
 
-  describe('hooks', function(){
-    describe('pre', function(){
+  describe('hooks', function() {
+    describe('pre', function() {
+      it('can pass non-error values to the next middleware', function(done) {
+        var db = start();
+        var schema =  new Schema({ name: String });
+
+        schema.pre('save', function(next) {
+          next('hey there');
+        }).pre('save', function(next, message) {
+          assert.ok(message);
+          assert.equal(message, 'hey there');
+          next();
+        }).pre('save', function(next) {
+          // just throw error
+          next(new Error('error string'));
+        }).pre('save', function(next) {
+          // don't call since error thrown in previous save
+          assert.ok(false);
+          next('don\'t call me');
+        });
+        var S = db.model('S', schema, collection);
+        var s = new S({ name: 'angelina' });
+
+        s.save(function(err) {
+          db.close();
+          assert.ok(err);
+          assert.equal(err.message, 'error string');
+          done();
+        });
+      });
+
       it('with undefined and null', function(done){
         var db = start();
         var schema = new Schema({ name: String });
@@ -4759,6 +4804,7 @@ describe('Model', function(){
       });
     });
 
+    
     it('Compound index on field earlier declared with 2dsphere index is saved', function (done) {
       var db = start();
       var PersonSchema = new Schema({
@@ -4795,4 +4841,74 @@ describe('Model', function(){
     });
   });
 
+  describe('gh-1920', function() {
+    it('doesnt crash', function(done) {
+      var db = start();
+
+      var parentSchema = new Schema({
+        children: [new Schema({
+          name: String,
+        })]
+      });
+
+      var Parent = db.model('gh-1920', parentSchema);
+
+      var parent = new Parent();
+      parent.children.push({name: 'child name'});
+      parent.save(function(err, it) {
+        assert.ifError(err);
+        parent.children.push({name: 'another child'});
+        Parent.findByIdAndUpdate(it._id, { $set: { children: parent.children } }, function(err, affected) {
+          assert.ifError(err);
+          done();
+        });
+      });
+    });
+  });
+
+  describe('gh-2442', function() {
+    it('marks array as modified when initializing non-array from db', function(done) {
+      var db = start();
+
+      var s1 = new Schema({
+        array: mongoose.Schema.Types.Mixed
+      }, { minimize: false });
+
+      var s2 = new Schema({
+        array: {
+          type: [{
+            _id: false,
+            value: {
+              type: Number,
+              default: 0
+            }
+          }],
+          default: [{}]
+        }
+      });
+
+      var M1 = db.model('gh-2442-1', s1, 'gh-2442');
+      var M2 = db.model('gh-2442-2', s2, 'gh-2442');
+
+      M1.create({ array: {} }, function(err, doc) {
+        assert.ifError(err);
+        assert.ok(doc.array);
+        M2.findOne({ _id: doc._id }, function(err, doc) {
+          assert.ifError(err);
+          assert.equal(doc.array[0].value, 0);
+          doc.array[0].value = 1;
+          doc.save(function(err) {
+            assert.ifError(err);
+            M2.findOne({ _id: doc._id }, function(err, doc) {
+              assert.ifError(err);
+              assert.ok(!doc.isModified('array'));
+              assert.deepEqual(doc.array[0].value, 1);
+              assert.equal('[{"value":1}]', JSON.stringify(doc.array));
+              done();
+            });
+          });
+        });
+      });
+    });
+  });
 });

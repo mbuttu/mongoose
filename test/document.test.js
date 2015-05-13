@@ -257,7 +257,7 @@ describe('document', function(){
     done();
   });
 
-  it('toObject options', function(done){
+  it('toObject options', function( done ){
     var doc = new TestDocument();
 
     doc.init({
@@ -411,7 +411,131 @@ describe('document', function(){
     // all done
     delete doc.schema.options.toObject;
     done();
-  })
+  });
+
+  it('doesnt use custom toObject options on save', function( done ){
+    var schema = new Schema({
+      name: String,
+      iWillNotBeDelete: Boolean,
+      nested: {
+        iWillNotBeDeleteToo: Boolean
+      }
+    });
+
+    schema.set('toObject', {
+      transform: function (doc, ret) {
+        delete ret.iWillNotBeDelete;
+        delete ret.nested.iWillNotBeDeleteToo;
+
+        return ret;
+      }
+    });
+    var db = start()
+      , Test = db.model('TestToObject', schema);
+
+    Test.create({ name: 'chetverikov', iWillNotBeDelete: true, 'nested.iWillNotBeDeleteToo': true}, function( err ){
+      assert.ifError(err);
+      Test.findOne({}, function( err, doc ){
+        assert.ifError(err);
+
+        assert.equal( doc._doc.iWillNotBeDelete, true );
+        assert.equal( doc._doc.nested.iWillNotBeDeleteToo, true );
+
+        done();
+      });
+    });
+  });
+
+  it('handles child schema transforms', function(done) {
+    var db = start();
+    var userSchema = new Schema({
+      name: String,
+      email: String
+    });
+    var topicSchema = new Schema({
+      title: String,
+      email: String,
+      followers: [userSchema]
+    });
+
+    userSchema.options.toObject = {
+      transform: function(doc, ret, options) {
+        delete ret.email;
+      }
+    };
+    
+    topicSchema.options.toObject = {
+      transform: function(doc, ret, options) {
+        ret.title = ret.title.toLowerCase();
+      }
+    };
+
+    var Topic = db.model('gh2691', topicSchema, 'gh2691');
+
+    var topic = new Topic({
+      title: 'Favorite Foods',
+      email: 'a@b.co',
+      followers: [{ name: 'Val', email: 'val@test.co' }]
+    });
+
+    var expectedOutput = {
+      _id: topic._id.toString(),
+      title: 'favorite foods',
+      email: 'a@b.co',
+      followers: [{ name: 'Val', _id: topic.followers[0]._id.toString() }]
+    };
+
+    var output = topic.toObject({ transform: true });
+    assert.equal('favorite foods', output.title);
+    assert.equal('a@b.co', output.email);
+    assert.equal('Val', output.followers[0].name);
+    assert.equal(undefined, output.followers[0].email);
+    done();
+  });
+
+  it('doesnt clobber child schema options when called with no params (gh-2035)', function(done) {
+    var db = start();
+    var userSchema = new Schema({
+      firstName: String,
+      lastName: String,
+      password: String
+    });
+
+    userSchema.virtual('fullName').get(function () {
+      return this.firstName + ' ' + this.lastName;
+    });
+
+    userSchema.set('toObject', { virtuals: false });
+
+    var postSchema = new Schema({
+      owner: { type: Schema.Types.ObjectId, ref: 'gh-2035-user' },
+      content: String
+    });
+
+    postSchema.virtual('capContent').get(function () {
+      return this.content.toUpperCase();
+    });
+
+    postSchema.set('toObject', { virtuals: true });
+    var User = db.model('gh-2035-user', userSchema, 'gh-2035-user');
+    var Post = db.model('gh-2035-post', postSchema, 'gh-2035-post');
+
+    var user = new User({ firstName: 'Joe', lastName: 'Smith', password: 'password' });
+
+    user.save(function (err, savedUser) {
+      assert.ifError(err);
+      var post = new Post({ owner: savedUser._id, content: 'lorem ipsum' });
+      post.save(function (err, savedPost) {
+        assert.ifError(err);
+        Post.findById(savedPost._id).populate('owner').exec(function (err, newPost) {
+          assert.ifError(err);
+          var obj = newPost.toObject();
+          assert.equal(obj.owner.fullName, undefined);
+          db.close(done);
+        });
+      });
+    });
+  });
 
   it('toJSON options', function(done){
     var doc = new TestDocument();
@@ -1183,6 +1307,124 @@ describe('document', function(){
               });
             });
           });
+        });
+      });
+    });
+  });
+
+  describe('gh-1933', function() {
+    it('works', function(done) {
+      var db = start();
+      var M = db.model('gh1933', new Schema({ id: String, field: Number }), 'gh1933');
+
+      M.create({}, function(error) {
+        assert.ifError(error);
+        M.findOne({}, function(error, doc) {
+          assert.ifError(error);
+          doc.__v = 123;
+          doc.field = 5;//.push({ _id: '123', type: '456' });
+          doc.save(function(error) {
+            assert.ifError(error);
+            done();
+          });
+        });
+      });
+    });
+  });
+
+  describe('gh-1638', function() {
+    it('works', function(done) {
+      var ItemChildSchema = new mongoose.Schema({
+        name: { type: String, required: true, default: "hello" }
+      });
+
+      var ItemParentSchema = new mongoose.Schema({
+        children: [ItemChildSchema]
+      });
+
+      var db = start();
+      var ItemParent = db.model('gh-1638-1', ItemParentSchema, 'gh-1638-1');
+      var ItemChild = db.model('gh-1638-2', ItemChildSchema, 'gh-1638-2');
+
+      var c1 = new ItemChild({ name: 'first child' });
+      var c2 = new ItemChild({ name: 'second child' });
+
+      var p = new ItemParent({
+        children: [c1, c2]
+      });
+
+      p.save(function(error) {
+        assert.ifError(error);
+
+        c2.name = 'updated 2';
+        p.children = [c2];
+        p.save(function(error, doc) {
+          assert.ifError(error);
+          assert.equal(1, doc.children.length);
+          done();
+        });
+      });
+    });
+  });
+
+  describe('gh-2434', function() {
+    it('will save the new value', function(done) {
+      var ItemSchema = new mongoose.Schema({
+        st: Number,
+        s: []
+      });
+
+      var db = start();
+      var Item = db.model('gh-2434', ItemSchema, 'gh-2434');
+
+      var item = new Item({ st: 1 });
+
+      item.save(function(error) {
+        assert.ifError(error);
+        item.st = 3;
+        item.s = [];
+        item.save(function(error) {
+          assert.ifError(error);
+          // item.st is 3 but may not be saved to DB
+          Item.findById(item._id, function(error, doc) {
+            assert.ifError(error);
+            assert.equal(3, doc.st);
+            done();
+          });
+        });
+      });
+    });
+  });
+
+  it('applies toJSON transform correctly for populated docs (gh-2910)', function(done) {
+    var db = start();
+    var parentSchema = mongoose.Schema({
+      c: { type: mongoose.Schema.Types.ObjectId, ref: 'gh-2910-1' }
+    });
+
+    var called = [];
+    parentSchema.options.toJSON = {
+      transform: function(doc, ret, options) {
+        called.push(ret);
+        return ret;
+      }
+    };
+
+    var childSchema = mongoose.Schema({
+      name: String
+    });
+
+    var Child = db.model('gh-2910-1', childSchema);
+    var Parent = db.model('gh-2910-0', parentSchema);
+
+    Child.create({ name: 'test' }, function(error, c) {
+      Parent.create({ c: c._id }, function(error, p) {
+        Parent.findOne({ _id: p._id }).populate('c').exec(function(error, p) {
+          var doc = p.toJSON();
+          assert.equal(called.length, 1);
+          assert.equal(called[0]._id.toString(), p._id.toString());
+          assert.equal(doc._id.toString(), p._id.toString());
+          db.close(done);
         });
       });
     });

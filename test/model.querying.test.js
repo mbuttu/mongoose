@@ -1732,39 +1732,39 @@ describe('model: querying:', function(){
   });
 
   describe('and', function(){
-    it('works with queries gh-1188', function(done){
+    it('works with queries gh-1188', function(done) {
       var db = start();
       var B = db.model('BlogPostB');
 
-      B.create({ title: 'and operator', published: false, author: 'Me' }, function (err, doc) {
+      B.create({ title: 'and operator', published: false, author: 'Me' }, function(err, doc) {
         assert.ifError(err);
 
-        B.find({ $and: [{ title: 'and operator' }] }, function (err, docs) {
+        B.find({ $and: [{ title: 'and operator' }] }, function(err, docs) {
           assert.ifError(err);
           assert.equal(1, docs.length);
 
-          B.find({ $and: [{ title: 'and operator' }, { published: true }] }, function (err, docs) {
+          B.find({ $and: [{ title: 'and operator' }, { published: true }] }, function(err, docs) {
             assert.ifError(err);
             assert.equal(0, docs.length);
 
-            B.find({ $and: [{ title: 'and operator' }, { published: false }] }, function (err, docs) {
+            B.find({ $and: [{ title: 'and operator' }, { published: false }] }, function(err, docs) {
               assert.ifError(err);
               assert.equal(1, docs.length);
 
-              var query = B.find()
+              var query = B.find();
               query.and([
-                  { title: 'and operator', published: false }
-                , { author: 'Me' }
-              ])
+                { title: 'and operator', published: false },
+                { author: 'Me' }
+              ]);
               query.exec(function (err, docs) {
                 assert.ifError(err);
                 assert.equal(1, docs.length);
 
                 var query = B.find()
                 query.and([
-                    { title: 'and operator', published: false }
-                  , { author: 'You' }
-                ])
+                  { title: 'and operator', published: false },
+                  { author: 'You' }
+                ]);
                 query.exec(function (err, docs) {
                   assert.ifError(err);
                   assert.equal(0, docs.length);
@@ -1774,9 +1774,19 @@ describe('model: querying:', function(){
             });
           });
         });
-      })
-    })
-  })
+      });
+    });
+
+    it('works with nested query selectors gh-1884', function(done) {
+      var db = start();
+      var B = db.model('gh1884', { a: String, b: String }, 'gh1884');
+
+      B.remove({ $and: [{ a: 'coffee' }, { b: { $in: ['bacon', 'eggs'] } }] }, function(error) {
+        assert.ifError(error);
+        done();
+      });
+    });
+  });
 });
 
 describe('buffers', function(){
@@ -2017,7 +2027,7 @@ describe('geo-spatial', function(){
           db.close();
           assert.ifError(err);
           assert.equal(1, docs.length);
-          done()
+          done();
         });
       }
     });
@@ -2477,5 +2487,54 @@ describe('lean option:', function(){
     assert.equal('number', typeof q._conditions.$and[0].$or[0].$and[0].$or[0].num);
     assert.equal('number', typeof q._conditions.$and[0].$or[0].$and[0].$or[1]['subdoc.num']);
     done();
-  })
+  });
+
+  it('casts $elemMatch (gh-2199)', function(done) {
+    var db = start();
+    var schema = new Schema({ dates: [Date] });
+    var Dates = db.model('Date', schema, 'dates');
+
+    var array = ['2014-07-01T02:00:00.000Z', '2014-07-01T04:00:00.000Z'];
+    Dates.create({ dates: array }, function(err) {
+      assert.ifError(err);
+      var elemMatch = { $gte: '2014-07-01T03:00:00.000Z' };
+      Dates.findOne({}, { dates: { $elemMatch: elemMatch } }, function(err, doc) {
+        assert.ifError(err);
+        assert.equal(doc.dates.length, 1);
+        assert.equal(doc.dates[0].getTime(),
+          new Date('2014-07-01T04:00:00.000Z').getTime());
+        done();
+      });
+    });
+  });
+
+  describe('$eq', function() {
+    var mongo26 = false;
+
+    before(function(done){
+      start.mongodVersion(function (err, version) {
+        if (err) return done(err);
+        mongo26 = 2 < version[0] || (2 == version[0] && 6 <= version[1]);
+        done();
+      });
+    });
+
+    it('casts $eq (gh-2752)', function(done){
+      var db = start();
+      var BlogPostB = db.model('BlogPostB', collection);
+
+      BlogPostB.findOne(
+        { _id: { $eq: '000000000000000000000001' }, numbers: { $eq: [1, 2] } },
+        function(err, doc) {
+          if (mongo26) {
+            assert.ifError(err);
+          } else {
+            assert.ok(err.toString().indexOf('MongoError') !== -1);
+          }
+
+          assert.ok(!doc);
+          db.close(done);
+        });
+    });
+  });
 })
